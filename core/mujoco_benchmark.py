@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -13,6 +14,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from scipy import stats
+from tqdm import tqdm
 
 
 ALGO_CHOICES = ("ippo", "mappo", "npg_uniform", "a2po_diag", "a2po_full")
@@ -184,7 +186,7 @@ def run_single_algo(cfg: MujocoConfig, algo: str) -> dict:
     logs: list[dict] = []
     t0 = time.perf_counter()
 
-    for it in range(cfg.iterations):
+    for it in tqdm(range(cfg.iterations), desc=f"seed={cfg.seed} algo={algo} epochs", file=sys.stdout, dynamic_ncols=True):
         batch_returns: list[float] = []
         grad_acc = [torch.zeros_like(_flatten_params(p)) for p in policies]
         fisher_diag_acc = [torch.zeros_like(_flatten_params(p)) for p in policies]
@@ -336,7 +338,7 @@ def run_benchmark_suite(
     per_algo_final: dict[str, list[float]] = {a: [] for a in algorithms}
     per_algo_runtime: dict[str, list[float]] = {a: [] for a in algorithms}
 
-    for seed in seeds:
+    for seed in tqdm(seeds, desc="MuJoCo seeds", file=sys.stdout, dynamic_ncols=True):
         for algo in algorithms:
             cfg = MujocoConfig(
                 env_name=env_name,

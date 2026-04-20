@@ -7,13 +7,13 @@ cd "$PROJECT_ROOT"
 
 MODE="${1:-full}"
 
-if [[ -x "${PY:-}" ]]; then
-  PYTHON_BIN="$PY"
-elif [[ -x "/home/khanh/miniconda3/envs/GAI/bin/python" ]]; then
-  PYTHON_BIN="/home/khanh/miniconda3/envs/GAI/bin/python"
-else
-  PYTHON_BIN="python"
-fi
+# if [[ -x "${PY:-}" ]]; then
+#   PYTHON_BIN="$PY"
+# elif [[ -x "/home/khanh/miniconda3/envs/GAI/bin/python" ]]; then
+#   PYTHON_BIN="/home/khanh/miniconda3/envs/GAI/bin/python"
+# else
+PYTHON_BIN="python"
+# fi
 
 DEVICE="${DEVICE:-cuda}"
 SCALE_LIST="${SCALE_LIST:-10 20 30}"
@@ -35,7 +35,7 @@ MUJOCO_SIGMA="${MUJOCO_SIGMA:-0.3}"
 MUJOCO_BATCH_ENVS="${MUJOCO_BATCH_ENVS:-halfcheetah-6x1 ant-4x2 hopper-v4 walker2d-v4 humanoid-v4}"
 MUJOCO_BATCH_ITERS="${MUJOCO_BATCH_ITERS:-500}"
 MUJOCO_BATCH_BATCH_EPISODES="${MUJOCO_BATCH_BATCH_EPISODES:-4}"
-MUJOCO_BATCH_HORIZON="${MUJOCO_BATCH_HORIZON:-80}"
+MUJOCO_BATCH_HORIZON="${MUJOCO_BATCH_HORIZON:-15}"
 MUJOCO_BATCH_ALGOS="${MUJOCO_BATCH_ALGOS:-ippo,mappo,npg_uniform,a2po_diag,a2po_full}"
 MUJOCO_BATCH_SEEDS="${MUJOCO_BATCH_SEEDS:-0}"
 MUJOCO_BATCH_SIGMA="${MUJOCO_BATCH_SIGMA:-0.3}"
@@ -43,7 +43,7 @@ MUJOCO_BATCH_SIGMA="${MUJOCO_BATCH_SIGMA:-0.3}"
 # CartPole 4-algorithm benchmarks
 CARTPOLE_ITERS="${CARTPOLE_ITERS:-500}"
 CARTPOLE_BATCH_EPISODES="${CARTPOLE_BATCH_EPISODES:-6}"
-CARTPOLE_HORIZON="${CARTPOLE_HORIZON:-200}"
+CARTPOLE_HORIZON="${CARTPOLE_HORIZON:-50}"
 
 # Matrix scaling alt plot runner
 MG_ALT_ITERS="${MG_ALT_ITERS:-500}"

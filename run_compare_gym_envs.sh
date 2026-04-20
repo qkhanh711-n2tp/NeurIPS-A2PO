@@ -8,8 +8,10 @@ set -euo pipefail
 #   N_AGENTS=5 ITERATIONS=100 DEVICE=cuda SEED=42 bash run_compare_gym_envs.sh
 
 N_AGENTS="${N_AGENTS:-10}"
-ITERATIONS="${ITERATIONS:-500}"
-DEVICE="${DEVICE:-cuda}"
+ITERATIONS="${ITERATIONS:-100}"
+BATCH_SIZE="${BATCH_SIZE:-4}"
+DEVICE="${DEVICE:-cpu}"
+HORIZON="${HORIZON:-15}"
 SEED="${SEED:-42}"
 A2PO_ETA="${A2PO_ETA:-0.003}"
 A2PO_BETA="${A2PO_BETA:-0.9}"
@@ -38,6 +40,8 @@ for ENV_NAME in "${ENVS[@]}"; do
     --n_agents "${N_AGENTS}" \
     --iterations "${ITERATIONS}" \
     --device "${DEVICE}" \
+    --batch_episodes "${BATCH_SIZE}" \
+    --horizon "${HORIZON}" \
     --seed "${SEED}" \
     --a2po_eta "${A2PO_ETA}" \
     --a2po_beta "${A2PO_BETA}" \
