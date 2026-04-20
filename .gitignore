@@ -1,0 +1,8 @@
+outputs*
+results*
+__pycache__/
+log*
+__init__.py
+*A2PO*
+generated/
+test*
