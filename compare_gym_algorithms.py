@@ -170,6 +170,10 @@ class TrainConfig:
     lr_value: float = 3e-4
     eta_npg: float = 0.05
     damping: float = 1e-2
+    npg_batch_episodes: int = 2
+    npg_horizon: int = 15
+    npg_cg_iters: int = 3
+    npg_fisher_frac: float = 0.25
     a2po_eta: float = 0.003
     a2po_beta: float = 0.9
     a2po_reg_lambda: float = 0.01
@@ -207,6 +211,7 @@ def collect_batch(
 ):
     n = cfg.n_agents
     obs_buf = [[] for _ in range(n)]
+    act_buf = [[] for _ in range(n)]
     logp_buf = [[] for _ in range(n)]
     value_pred_buf = [[] for _ in range(n)]
     adv_buf = [[] for _ in range(n)]
@@ -235,6 +240,7 @@ def collect_batch(
                     v = central_value(obs_joint).squeeze(-1)
 
                 obs_buf[i].append(obs_i)
+                act_buf[i].append(act)
                 logp_buf[i].append(logp)
                 ep_val[i].append(v)
                 actions.append(int(act.item()))
@@ -278,6 +284,7 @@ def collect_batch(
     for i in range(n):
         data[i] = {
             "obs": torch.stack(obs_buf[i]),
+            "act": torch.stack(act_buf[i]),
             "logp": torch.stack(logp_buf[i]),
             "adv": torch.stack(adv_buf[i]).detach(),
             "ret": torch.stack(ret_buf[i]).detach(),
@@ -374,6 +381,53 @@ class NPGUniformTrainer:
     def _flatten_grads(self, grads):
         return torch.cat([g.reshape(-1) for g in grads])
 
+    def _fisher_vector_product(self, policy: PolicyNet, obs: torch.Tensor, vector: torch.Tensor) -> torch.Tensor:
+        if 0.0 < self.cfg.npg_fisher_frac < 1.0 and obs.shape[0] > 1:
+            subset = max(1, int(obs.shape[0] * self.cfg.npg_fisher_frac))
+            idx = torch.randperm(obs.shape[0], device=obs.device)[:subset]
+            obs = obs[idx]
+
+        dist = policy(obs)
+        old_logits = dist.logits.detach()
+        old_dist = Categorical(logits=old_logits)
+        kl = torch.distributions.kl.kl_divergence(old_dist, dist).mean()
+
+        params = [p for p in policy.parameters() if p.requires_grad]
+        kl_grads = torch.autograd.grad(kl, params, create_graph=True)
+        flat_kl_grads = self._flatten_grads(kl_grads)
+        kl_v = torch.dot(flat_kl_grads, vector)
+        hvp = torch.autograd.grad(kl_v, params, retain_graph=False)
+        flat_hvp = self._flatten_grads(hvp).detach()
+        return flat_hvp + self.cfg.damping * vector
+
+    def _conjugate_gradient(
+        self,
+        fisher_vector_product: Callable[[torch.Tensor], torch.Tensor],
+        b: torch.Tensor,
+        max_iter: int = 10,
+        tol: float = 1e-10,
+    ) -> torch.Tensor:
+        x = torch.zeros_like(b)
+        r = b.clone()
+        p = r.clone()
+        rdotr = torch.dot(r, r)
+
+        for _ in range(max_iter):
+            if rdotr.item() <= tol:
+                break
+            Ap = fisher_vector_product(p)
+            denom = torch.dot(p, Ap) + 1e-8
+            alpha = rdotr / denom
+            x = x + alpha * p
+            r = r - alpha * Ap
+            new_rdotr = torch.dot(r, r)
+            if new_rdotr.item() <= tol:
+                break
+            beta = new_rdotr / (rdotr + 1e-8)
+            p = r + beta * p
+            rdotr = new_rdotr
+        return x
+
     def train(self, env_builder: Callable[[], MultiAgentSharedCartPole]):
         logs = []
         for k in tqdm(range(self.cfg.iterations), desc="NPG_uniform", file=sys.stdout, dynamic_ncols=True):
@@ -384,32 +438,19 @@ class NPGUniformTrainer:
             for i in range(self.cfg.n_agents):
                 adv = (batch[i]["adv"] - batch[i]["adv"].mean()) / (batch[i]["adv"].std() + 1e-8)
                 params = [p for p in self.policies[i].parameters() if p.requires_grad]
+                obs = batch[i]["obs"]
+                actions = batch[i]["act"]
+                dist = self.policies[i](obs)
+                logp = dist.log_prob(actions)
+                pi_loss = -(logp * adv.detach()).mean()
+                policy_grads = torch.autograd.grad(pi_loss, params, create_graph=False)
+                g = self._flatten_grads(policy_grads).detach()
 
-                # Empirical full Fisher from score-function grads
-                fisher: torch.Tensor | None = None
-                g_acc: torch.Tensor | None = None
-                for t, lp in enumerate(batch[i]["logp"]):
-                    score_grads = torch.autograd.grad(
-                        lp,
-                        params,
-                        retain_graph=(t < len(batch[i]["logp"]) - 1),
-                        create_graph=False,
-                    )
-                    s = self._flatten_grads(score_grads).detach()
-                    if t == 0:
-                        fisher = torch.zeros((s.numel(), s.numel()), dtype=torch.float32, device=self.device)
-                        g_acc = torch.zeros_like(s)
-                    fisher += torch.outer(s, s)
-                    g_acc += (-adv[t].detach()) * s
-                if fisher is None:
-                    raise RuntimeError("Empty log-probability batch for NPG_uniform")
-                fisher = fisher / max(len(batch[i]["logp"]), 1)
-                fisher = fisher + self.cfg.damping * torch.eye(fisher.shape[0], device=self.device)
-                if g_acc is None:
-                    raise RuntimeError("Failed to accumulate policy gradient for NPG_uniform")
-                g = g_acc / max(len(batch[i]["logp"]), 1)
-
-                nat_g = torch.linalg.solve(fisher, g)
+                nat_g = self._conjugate_gradient(
+                    lambda vec: self._fisher_vector_product(self.policies[i], obs, vec),
+                    g,
+                    max_iter=self.cfg.npg_cg_iters,
+                )
 
                 theta = self._flatten_params(self.policies[i]).detach()
                 theta_new = theta - self.cfg.eta_npg * nat_g
@@ -513,7 +554,15 @@ def run_all(cfg: TrainConfig):
     set_seed(cfg.seed)
     device = torch.device(cfg.device)
 
-    def env_builder(seed_shift: int = 0):
+    def env_builder(seed_shift: int = 0, model: str = "npg"):
+        if model == "npg":
+            # NPG_uniform uses a smaller rollout horizon to keep second-order updates tractable.
+            return MultiAgentSharedCartPole(
+            cfg.n_agents,
+            env_name=cfg.env_name,
+            max_steps=cfg.npg_horizon,
+            seed=cfg.seed + seed_shift,
+            )
         return MultiAgentSharedCartPole(
             cfg.n_agents,
             env_name=cfg.env_name,
@@ -530,6 +579,15 @@ def run_all(cfg: TrainConfig):
 
     results = {}
 
+    # NPG_uniform
+    set_seed(cfg.seed)
+    print("[RUN] NPG_uniform")
+    pi, v_local, _ = build_models(cfg.n_agents, obs_dim, n_actions, device)
+    npg_cfg = TrainConfig(**{**cfg.__dict__, "batch_episodes": cfg.npg_batch_episodes, "horizon": cfg.npg_horizon})
+    npg = NPGUniformTrainer(pi, v_local, npg_cfg)
+    logs_npg = npg.train(lambda: env_builder(300, model="npg"))
+    results["NPG_uniform"] = {"logs": logs_npg, "final": evaluate_last(logs_npg)}
+
     # IPPO
     set_seed(cfg.seed)
     print("[RUN] IPPO")
@@ -545,14 +603,6 @@ def run_all(cfg: TrainConfig):
     mappo = MAPPOTrainer(pi, v_central, cfg)
     logs_mappo = mappo.train(lambda: env_builder(200))
     results["MAPPO"] = {"logs": logs_mappo, "final": evaluate_last(logs_mappo)}
-
-    # NPG_uniform
-    set_seed(cfg.seed)
-    print("[RUN] NPG_uniform")
-    pi, v_local, _ = build_models(cfg.n_agents, obs_dim, n_actions, device)
-    npg = NPGUniformTrainer(pi, v_local, cfg)
-    logs_npg = npg.train(lambda: env_builder(300))
-    results["NPG_uniform"] = {"logs": logs_npg, "final": evaluate_last(logs_npg)}
 
     # A2PO runs on the same generic env wrapper as the other methods.
     set_seed(cfg.seed)
@@ -587,6 +637,10 @@ def main():
     parser.add_argument("--horizon", type=int, default=50)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--npg_batch_episodes", type=int, default=2)
+    parser.add_argument("--npg_horizon", type=int, default=15)
+    parser.add_argument("--npg_cg_iters", type=int, default=3)
+    parser.add_argument("--npg_fisher_frac", type=float, default=0.25)
     parser.add_argument("--a2po_eta", type=float, default=0.003)
     parser.add_argument("--a2po_beta", type=float, default=0.9)
     parser.add_argument("--a2po_reg_lambda", type=float, default=0.01)
@@ -599,6 +653,10 @@ def main():
         iterations=args.iterations,
         batch_episodes=args.batch_episodes,
         horizon=args.horizon,
+        npg_batch_episodes=args.npg_batch_episodes,
+        npg_horizon=args.npg_horizon,
+        npg_cg_iters=args.npg_cg_iters,
+        npg_fisher_frac=args.npg_fisher_frac,
         a2po_eta=args.a2po_eta,
         a2po_beta=args.a2po_beta,
         a2po_reg_lambda=args.a2po_reg_lambda,
@@ -614,7 +672,7 @@ def main():
         outdir = Path(args.outdir)
     else:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        outdir = Path("results") / "dataset" / f"gym_{cfg.env_name}_n{cfg.n_agents}_it{cfg.iterations}_{ts}"
+        outdir = Path("results") / "dataset" / f"gym/{cfg.env_name}/n{cfg.n_agents}/it{cfg.iterations}_{ts}"
     
     # Save outputs
     saved_outdir, csv_path, results_csv_path, plot_path, json_path = _save_outputs(outdir, results, cfg)

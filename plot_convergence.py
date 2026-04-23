@@ -130,7 +130,7 @@ def _run_a2po_job(cfg: ProposedConfig, live_csv: str | None = None):
 
 
 def _run_cartpole(args) -> tuple[dict[str, np.ndarray], dict[str, float], list[str], str]:
-    method_order = ["IPPO", "MAPPO", "NPG_uniform", "A2PO"]
+    method_order = ["NPG_uniform", "IPPO", "MAPPO", "A2PO"]
 
     bcfg = BaselineConfig(
         n_agents=args.n_agents,
@@ -159,17 +159,17 @@ def _run_cartpole(args) -> tuple[dict[str, np.ndarray], dict[str, float], list[s
     if args.parallel:
         t0 = perf_counter()
         method_paths = {
+            "NPG_uniform": live_dir / "npg_uniform.csv",
             "IPPO": live_dir / "ippo.csv",
             "MAPPO": live_dir / "mappo.csv",
-            "NPG_uniform": live_dir / "npg_uniform.csv",
             "A2PO": live_dir / "a2po.csv",
         }
         max_workers = max(1, int(args.num_workers))
         with ProcessPoolExecutor(max_workers=max_workers) as pool:
             futures = {
+                "NPG_uniform": pool.submit(_run_npg_job, bcfg, str(method_paths["NPG_uniform"])),
                 "IPPO": pool.submit(_run_ippo_job, bcfg, str(method_paths["IPPO"])),
                 "MAPPO": pool.submit(_run_mappo_job, bcfg, str(method_paths["MAPPO"])),
-                "NPG_uniform": pool.submit(_run_npg_job, bcfg, str(method_paths["NPG_uniform"])),
                 "A2PO": pool.submit(_run_a2po_job, pcfg, str(method_paths["A2PO"])),
             }
             csv_path = outdir / "convergence_curves.csv"
@@ -187,24 +187,24 @@ def _run_cartpole(args) -> tuple[dict[str, np.ndarray], dict[str, float], list[s
     else:
         t0 = perf_counter()
         baseline_results = {
+            "NPG_uniform": run_npg_uniform(bcfg),
             "IPPO": run_ippo(bcfg),
             "MAPPO": run_mappo(bcfg),
-            "NPG_uniform": run_npg_uniform(bcfg),
         }
         baselines_total_sec = perf_counter() - t0
         a2po_logs, a2po_runtime_sec = run_proposed(pcfg, return_runtime=True)
 
     curves = {
+        "NPG_uniform": _extract_curve(baseline_results["NPG_uniform"]["logs"]),
         "IPPO": _extract_curve(baseline_results["IPPO"]["logs"]),
         "MAPPO": _extract_curve(baseline_results["MAPPO"]["logs"]),
-        "NPG_uniform": _extract_curve(baseline_results["NPG_uniform"]["logs"]),
         "A2PO": _extract_curve(a2po_logs),
     }
 
     runtimes = {
+        "NPG_uniform": float(baseline_results["NPG_uniform"].get("runtime_sec", 0.0)),
         "IPPO": float(baseline_results["IPPO"].get("runtime_sec", 0.0)),
         "MAPPO": float(baseline_results["MAPPO"].get("runtime_sec", 0.0)),
-        "NPG_uniform": float(baseline_results["NPG_uniform"].get("runtime_sec", 0.0)),
         "A2PO": float(a2po_runtime_sec),
         "BASELINES_TOTAL": float(baselines_total_sec),
     }
@@ -217,7 +217,7 @@ def _run_mujoco(args) -> tuple[dict[str, np.ndarray], dict[str, float], list[str
 
     algorithms = [x.strip().lower() for x in args.mujoco_algos.split(",") if x.strip()]
     if not algorithms:
-        algorithms = ["ippo", "mappo", "npg_uniform", "a2po_diag", "a2po_full"]
+        algorithms = ["npg_uniform", "ippo", "mappo", "a2po_diag", "a2po_full"]
     seeds = [int(x.strip()) for x in args.mujoco_seeds.split(",") if x.strip()]
     if not seeds:
         seeds = [args.seed]
@@ -279,7 +279,7 @@ def main() -> None:
     parser.add_argument(
         "--mujoco_algos",
         type=str,
-        default="ippo,mappo,npg_uniform,a2po_diag,a2po_full",
+        default="npg_uniform,ippo,mappo,a2po_diag,a2po_full",
         help="Comma-separated: ippo,mappo,npg_uniform,a2po_diag,a2po_full",
     )
     parser.add_argument("--mujoco_seeds", type=str, default="0,1,2,3,4")
@@ -292,7 +292,7 @@ def main() -> None:
 
     if args.dataset == "cartpole":
         curves, runtimes, method_order, title = _run_cartpole(args)
-        runtime_method_order = ["IPPO", "MAPPO", "NPG_uniform", "A2PO", "BASELINES_TOTAL"]
+        runtime_method_order = ["NPG_uniform", "IPPO", "MAPPO",  "A2PO", "BASELINES_TOTAL"]
     else:
         curves, runtimes, method_order, title = _run_mujoco(args)
         runtime_method_order = method_order

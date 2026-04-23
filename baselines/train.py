@@ -93,6 +93,8 @@ def collect_batch(
     device: torch.device,
 ):
     n = cfg.n_agents
+    obs_buf = [[] for _ in range(n)]
+    act_buf = [[] for _ in range(n)]
     logp_buf = [[] for _ in range(n)]
     value_pred_buf = [[] for _ in range(n)]
     adv_buf = [[] for _ in range(n)]
@@ -121,6 +123,8 @@ def collect_batch(
                 else:
                     v = central_value(obs_joint).squeeze(-1)
 
+                obs_buf[i].append(obs_i)
+                act_buf[i].append(act)
                 logp_buf[i].append(logp)
                 ep_val[i].append(v)
                 actions.append(int(act.item()))
@@ -161,6 +165,8 @@ def collect_batch(
     data = {}
     for i in range(n):
         data[i] = {
+            "obs": torch.stack(obs_buf[i]),
+            "act": torch.stack(act_buf[i]),
             "logp": torch.stack(logp_buf[i]),
             "adv": torch.stack(adv_buf[i]).detach(),
             "ret": torch.stack(ret_buf[i]).detach(),
@@ -264,6 +270,48 @@ class NPGUniformTrainer:
     def _flatten_grads(grads):
         return torch.cat([g.reshape(-1) for g in grads])
 
+    def _fisher_vector_product(self, policy: PolicyNet, obs: torch.Tensor, vector: torch.Tensor) -> torch.Tensor:
+        dist = policy(obs)
+        old_logits = dist.logits.detach()
+        old_dist = Categorical(logits=old_logits)
+        kl = torch.distributions.kl.kl_divergence(old_dist, dist).mean()
+
+        params = [p for p in policy.parameters() if p.requires_grad]
+        kl_grads = torch.autograd.grad(kl, params, create_graph=True)
+        flat_kl_grads = self._flatten_grads(kl_grads)
+        kl_v = torch.dot(flat_kl_grads, vector)
+        hvp = torch.autograd.grad(kl_v, params, retain_graph=False)
+        flat_hvp = self._flatten_grads(hvp).detach()
+        return flat_hvp + self.cfg.damping * vector
+
+    def _conjugate_gradient(
+        self,
+        fisher_vector_product: Callable[[torch.Tensor], torch.Tensor],
+        b: torch.Tensor,
+        max_iter: int = 10,
+        tol: float = 1e-10,
+    ) -> torch.Tensor:
+        x = torch.zeros_like(b)
+        r = b.clone()
+        p = r.clone()
+        rdotr = torch.dot(r, r)
+
+        for _ in range(max_iter):
+            if rdotr.item() <= tol:
+                break
+            Ap = fisher_vector_product(p)
+            denom = torch.dot(p, Ap) + 1e-8
+            alpha = rdotr / denom
+            x = x + alpha * p
+            r = r - alpha * Ap
+            new_rdotr = torch.dot(r, r)
+            if new_rdotr.item() <= tol:
+                break
+            beta = new_rdotr / (rdotr + 1e-8)
+            p = r + beta * p
+            rdotr = new_rdotr
+        return x
+
     def train(
         self,
         env_builder: Callable[[], MultiAgentSharedCartPole],
@@ -275,26 +323,18 @@ class NPGUniformTrainer:
             for i in range(self.cfg.n_agents):
                 adv = (batch[i]["adv"] - batch[i]["adv"].mean()) / (batch[i]["adv"].std() + 1e-8)
                 params = [p for p in self.policies[i].parameters() if p.requires_grad]
+                obs = batch[i]["obs"]
+                actions = batch[i]["act"]
+                dist = self.policies[i](obs)
+                logp = dist.log_prob(actions)
+                pi_loss = -(logp * adv.detach()).mean()
+                policy_grads = torch.autograd.grad(pi_loss, params, create_graph=False)
+                g = self._flatten_grads(policy_grads).detach()
 
-                fisher: torch.Tensor | None = None
-                g_acc: torch.Tensor | None = None
-                for t, lp in enumerate(batch[i]["logp"]):
-                    score_grads = torch.autograd.grad(lp, params, retain_graph=(t < len(batch[i]["logp"]) - 1), create_graph=False)
-                    s = self._flatten_grads(score_grads).detach()
-                    if t == 0:
-                        fisher = torch.zeros((s.numel(), s.numel()), dtype=torch.float32, device=self.device)
-                        g_acc = torch.zeros_like(s)
-                    fisher += torch.outer(s, s)
-                    g_acc += (-adv[t].detach()) * s
-
-                if fisher is None or g_acc is None:
-                    raise RuntimeError("Empty batch while computing NPG_uniform update")
-
-                fisher = fisher / max(len(batch[i]["logp"]), 1)
-                fisher = fisher + self.cfg.damping * torch.eye(fisher.shape[0], device=self.device)
-                g = g_acc / max(len(batch[i]["logp"]), 1)
-
-                nat_g = torch.linalg.solve(fisher, g)
+                nat_g = self._conjugate_gradient(
+                    lambda vec: self._fisher_vector_product(self.policies[i], obs, vec),
+                    g,
+                )
                 theta = self._flatten_params(self.policies[i]).detach()
                 theta_new = theta - self.cfg.eta_npg * nat_g
                 self._set_flat_params(self.policies[i], theta_new)
@@ -380,9 +420,9 @@ def run_npg_uniform(cfg: TrainConfig, log_callback: Callable[[dict], None] | Non
 
 def run_baselines(cfg: TrainConfig):
     results = {
+        "NPG_uniform": run_npg_uniform(cfg),
         "IPPO": run_ippo(cfg),
         "MAPPO": run_mappo(cfg),
-        "NPG_uniform": run_npg_uniform(cfg),
     }
     return results
 
@@ -412,7 +452,7 @@ def main():
     print("-----------------------------------------------------------")
     print(f"{'Method':<14} {'LastK Mean Return':>20} {'LastK Std':>12}")
     print("-----------------------------------------------------------")
-    for name in ["IPPO", "MAPPO", "NPG_uniform"]:
+    for name in ["NPG_uniform", "IPPO", "MAPPO"]:
         mean_r, std_r = results[name]["final"]
         print(f"{name:<14} {mean_r:>20.3f} {std_r:>12.3f}")
 

@@ -17,27 +17,27 @@ PYTHON_BIN="python"
 
 DEVICE="${DEVICE:-cuda}"
 SCALE_LIST="${SCALE_LIST:-10 20 30}"
-NUM_WORKERS="${NUM_WORKERS:-4}"
+NUM_WORKERS="${NUM_WORKERS:-20}"
 
 # Paper-ready synthetic experiments
 MATRIX_ITERS="${MATRIX_ITERS:-500}"
 MATRIX_BATCH="${MATRIX_BATCH:-16}"
 NAV_ITERS="${NAV_ITERS:-500}"
 NAV_BATCH="${NAV_BATCH:-8}"
-NAV_HORIZON="${NAV_HORIZON:-15}"
-NAV_NUM_SEEDS="${NAV_NUM_SEEDS:-10}"
-NAV_N_AGENTS="${NAV_N_AGENTS:-3}"
+NAV_HORIZON="${NAV_HORIZON:-100}"
+NAV_NUM_SEEDS="${NAV_NUM_SEEDS:-1}"
+NAV_N_AGENTS="${NAV_N_AGENTS:-10}"
 DATASET="${DATASET:-mujoco}"
 MUJOCO_ENV="${MUJOCO_ENV:-halfcheetah-6x1}"
-MUJOCO_ALGOS="${MUJOCO_ALGOS:-ippo,mappo,npg_uniform,a2po_diag,a2po_full}"
-MUJOCO_SEEDS="${MUJOCO_SEEDS:-0,1,2,3,4}"
+MUJOCO_ALGOS="${MUJOCO_ALGOS:-npg_uniform,ippo,mappo,a2po_diag,a2po_full}"
+MUJOCO_SEEDS="${MUJOCO_SEEDS:-0}"
 MUJOCO_SIGMA="${MUJOCO_SIGMA:-0.3}"
 MUJOCO_BATCH_ENVS="${MUJOCO_BATCH_ENVS:-halfcheetah-6x1 ant-4x2 hopper-v4 walker2d-v4 humanoid-v4}"
 MUJOCO_BATCH_ITERS="${MUJOCO_BATCH_ITERS:-500}"
 MUJOCO_BATCH_BATCH_EPISODES="${MUJOCO_BATCH_BATCH_EPISODES:-4}"
-MUJOCO_BATCH_HORIZON="${MUJOCO_BATCH_HORIZON:-15}"
-MUJOCO_BATCH_ALGOS="${MUJOCO_BATCH_ALGOS:-ippo,mappo,npg_uniform,a2po_diag,a2po_full}"
-MUJOCO_BATCH_SEEDS="${MUJOCO_BATCH_SEEDS:-0}"
+MUJOCO_BATCH_HORIZON="${MUJOCO_BATCH_HORIZON:-80}"
+MUJOCO_BATCH_ALGOS="${MUJOCO_BATCH_ALGOS:-npg_uniform,ippo,mappo,a2po_diag,a2po_full}"
+MUJOCO_BATCH_SEEDS="${MUJOCO_BATCH_SEEDS:-42}"
 MUJOCO_BATCH_SIGMA="${MUJOCO_BATCH_SIGMA:-0.3}"
 
 # CartPole 4-algorithm benchmarks
@@ -85,7 +85,7 @@ run_paper_ready() {
     --horizon "$NAV_HORIZON" --num_seeds "$NAV_NUM_SEEDS" \
     --n_agents "$NAV_N_AGENTS"
 
-run_logged "exp02_navigation" \
+  run_logged "exp02_navigation" \
     "$PYTHON_BIN" experiments/navigation_runner.py \
     --preset local_bottleneck --outdir "$outroot/exp02_navigation_local_bottleneck" \
     --iterations "$NAV_ITERS" --batch_size "$NAV_BATCH" \
@@ -141,7 +141,7 @@ run_scaling_10_20_30() {
       --batch_episodes "$CARTPOLE_BATCH_EPISODES" \
       --horizon "$CARTPOLE_HORIZON" \
       --device "$DEVICE" \
-      --outdir "results/dataset/mujoco_${MUJOCO_ENV}_it${CARTPOLE_ITERS}_${TS}"
+      --outdir "results/dataset/mujoco/${MUJOCO_ENV}_it${CARTPOLE_ITERS}_${TS}"
   else
     echo "[ERROR] DATASET không hợp lệ: $DATASET (hỗ trợ: cartpole|mujoco)"
     exit 1
