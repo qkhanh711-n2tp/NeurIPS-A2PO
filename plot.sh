@@ -1,0 +1,5 @@
+cd /home/khanh/Khanh_stuff/Inprogress/A2PO && conda run -n GAI python plot_gym_dataset.py --panel --n-agents-list 10,20,30 --envs CartPole-v1,HalfCheetah-v4,Hopper-v4 --panel-png /home/khanh/Khanh_stuff/Inprogress/A2PO/results/dataset/gym/panel_like_ref_0_n10_20_30.png --panel-pdf /home/khanh/Khanh_stuff/Inprogress/A2PO/results/dataset/gym/panel_like_ref_0_n10_20_30.pdf
+
+cd /home/khanh/Khanh_stuff/Inprogress/A2PO && conda run -n GAI python plot_gym_dataset.py --panel --n-agents-list 10,20,30 --envs Ant-v4,Pendulum-v1,Walker2d-v4 --panel-png /home/khanh/Khanh_stuff/Inprogress/A2PO/results/dataset/gym/panel_like_ref_1_n10_20_30.png --panel-pdf /home/khanh/Khanh_stuff/Inprogress/A2PO/results/dataset/gym/panel_like_ref_1_n10_20_30.pdf
+
+# cd /home/khanh/Khanh_stuff/Inprogress/A2PO && conda run -n GAI python plot_gym_dataset.py --panel --n-agents-list 10,20,30 --envs LunarLander-v3,Humanoid-v4 --panel-png /home/khanh/Khanh_stuff/Inprogress/A2PO/results/dataset/gym/panel_like_ref_2_n10_20_30.png --panel-pdf /home/khanh/Khanh_stuff/Inprogress/A2PO/results/dataset/gym/panel_like_ref_2_n10_20_30.pdf

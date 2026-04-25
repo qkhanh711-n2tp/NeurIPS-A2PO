@@ -206,7 +206,7 @@ def run_exp06(
     methods = ["IPPO", "MAPPO", "NPG_Uniform", "A2PO_Diag"]
     rows = []
     payload = {}
-    counts = agent_counts or [3, 10, 20]
+    counts = agent_counts or [3, 10, 20, 30, 50]
     for n_agents in counts:
         merged = dict(cfg_override or {})
         merged.update(

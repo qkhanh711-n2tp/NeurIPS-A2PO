@@ -188,14 +188,13 @@ class A2PO:
 
         for agent_i in range(cfg.n_agents):
             self._set_params(self.x[agent_i])
-            joint_logp_buf: list[torch.Tensor] = []
+            policy_obs_buf = [[] for _ in range(cfg.n_agents)]
+            policy_act_buf = [[] for _ in range(cfg.n_agents)]
             advantage_steps: list[torch.Tensor] = []
 
             for _ in range(cfg.batch_trajectories):
                 env = env_builder()
                 obs = env.reset()
-
-                tr_joint_logp: list[torch.Tensor] = []
                 tr_rew: list[torch.Tensor] = []
                 tr_val: list[torch.Tensor] = []
                 done = False
@@ -203,35 +202,33 @@ class A2PO:
 
                 for _t in range(cfg.horizon):
                     actions = []
-                    joint_logp = torch.zeros((), device=self.device)
                     obs_i = None
-                    for j, policy in enumerate(self.policies):
-                        obs_j = torch.as_tensor(obs[j], device=self.device, dtype=torch.float32)
-                        dist: Distribution = policy(obs_j)
-                        act = dist.sample()
-                        logp = dist.log_prob(act)
-                        if logp.dim() > 0:
-                            logp = logp.sum()
+                    with torch.no_grad():
+                        for j, policy in enumerate(self.policies):
+                            obs_j = torch.as_tensor(obs[j], device=self.device, dtype=torch.float32)
+                            dist: Distribution = policy(obs_j)
+                            act = dist.sample()
 
-                        joint_logp = joint_logp + logp
-                        actions.append(int(act.item()))
-                        entropy_total += dist.entropy().mean().item()
-                        entropy_count += 1
+                            policy_obs_buf[j].append(obs_j)
+                            policy_act_buf[j].append(act.detach())
+                            actions.append(int(act.item()))
+                            entropy_total += dist.entropy().mean().item()
+                            entropy_count += 1
 
-                        if j == agent_i:
-                            obs_i = obs_j
+                            if j == agent_i:
+                                obs_i = obs_j
 
                     if obs_i is None:
                         raise RuntimeError(f"Failed to collect observation for agent {agent_i}")
 
-                    val = (
-                        self.value_fns[agent_i](obs_i).squeeze()
-                        if self.value_fns
-                        else torch.zeros((), device=self.device)
-                    )
-                    tr_joint_logp.append(joint_logp)
+                    with torch.no_grad():
+                        val = (
+                            self.value_fns[agent_i](obs_i).squeeze()
+                            if self.value_fns
+                            else torch.zeros((), device=self.device)
+                        )
                     tr_val.append(val)
-                    value_obs_buf[agent_i].append(obs_i.detach().clone())
+                    value_obs_buf[agent_i].append(obs_i)
 
                     next_obs, rewards, done, _ = env.step(actions)
                     reward_t = torch.tensor(rewards[agent_i], device=self.device, dtype=torch.float32)
@@ -245,11 +242,12 @@ class A2PO:
                     v_last = torch.zeros((), device=self.device)
                 else:
                     obs_i = torch.as_tensor(obs[agent_i], device=self.device, dtype=torch.float32)
-                    v_last = (
-                        self.value_fns[agent_i](obs_i).squeeze()
-                        if self.value_fns
-                        else torch.zeros((), device=self.device)
-                    )
+                    with torch.no_grad():
+                        v_last = (
+                            self.value_fns[agent_i](obs_i).squeeze()
+                            if self.value_fns
+                            else torch.zeros((), device=self.device)
+                        )
                 tr_val.append(v_last)
 
                 adv_i, ret_i = self._compute_gae(
@@ -261,13 +259,13 @@ class A2PO:
 
                 advantage_steps.extend(adv_i)
                 return_buf[agent_i].extend(ret_i)
-                joint_logp_buf.extend(tr_joint_logp)
                 episode_returns.append(episode_return)
                 env.close()
 
+            joint_logp = self._compute_joint_logp(policy_obs_buf, policy_act_buf)
             g_hat_buf.append(
                 self._compute_agent_gradient(
-                    joint_logp=torch.stack(joint_logp_buf),
+                    joint_logp=joint_logp,
                     advantages=torch.stack(advantage_steps),
                 )
             )
@@ -298,6 +296,25 @@ class A2PO:
             loss = 0.5 * (pred - target) ** 2
             loss.mean().backward()
             opt.step()
+
+    def _compute_joint_logp(
+        self,
+        obs_buf: list[list[torch.Tensor]],
+        act_buf: list[list[torch.Tensor]],
+    ) -> torch.Tensor:
+        """Recompute joint log-probabilities in batch to avoid retaining rollout graphs."""
+        joint_logp = None
+        for policy, obs_list, act_list in zip(self.policies, obs_buf, act_buf):
+            obs_stack = torch.stack(obs_list)
+            act_stack = torch.stack(act_list)
+            dist: Distribution = policy(obs_stack)
+            logp = dist.log_prob(act_stack)
+            if logp.dim() > 1:
+                logp = logp.sum(dim=-1)
+            joint_logp = logp if joint_logp is None else joint_logp + logp
+        if joint_logp is None:
+            return self._zero_vec.new_zeros((0,))
+        return joint_logp
 
     # ------------------------------------------------------------------ #
     # Helpers

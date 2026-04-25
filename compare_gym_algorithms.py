@@ -579,6 +579,27 @@ def run_all(cfg: TrainConfig):
 
     results = {}
 
+    # A2PO runs on the same generic env wrapper as the other methods.
+    set_seed(cfg.seed)
+    print("[RUN] A2PO")
+    pi, v_local, _ = build_models(cfg.n_agents, obs_dim, n_actions, device)
+    a2po_cfg = A2POConfig(
+        n_agents=cfg.n_agents,
+        gamma=cfg.gamma,
+        gae_lambda=cfg.gae_lambda,
+        horizon=cfg.horizon,
+        batch_trajectories=cfg.batch_episodes,
+        eta=cfg.a2po_eta,
+        beta=cfg.a2po_beta,
+        reg_lambda=cfg.a2po_reg_lambda,
+        clip_grad_norm=1.0,
+        value_lr=cfg.a2po_value_lr,
+        device=cfg.device,
+    )
+    a2po = A2PO(pi, value_fns=v_local, cfg=a2po_cfg)
+    logs_a2po = a2po.train(lambda: env_builder(400), num_iterations=cfg.iterations)
+    results["A2PO"] = {"logs": logs_a2po, "final": evaluate_last(logs_a2po)}
+
     # NPG_uniform
     set_seed(cfg.seed)
     print("[RUN] NPG_uniform")
@@ -604,26 +625,7 @@ def run_all(cfg: TrainConfig):
     logs_mappo = mappo.train(lambda: env_builder(200))
     results["MAPPO"] = {"logs": logs_mappo, "final": evaluate_last(logs_mappo)}
 
-    # A2PO runs on the same generic env wrapper as the other methods.
-    set_seed(cfg.seed)
-    print("[RUN] A2PO")
-    pi, v_local, _ = build_models(cfg.n_agents, obs_dim, n_actions, device)
-    a2po_cfg = A2POConfig(
-        n_agents=cfg.n_agents,
-        gamma=cfg.gamma,
-        gae_lambda=cfg.gae_lambda,
-        horizon=cfg.horizon,
-        batch_trajectories=cfg.batch_episodes,
-        eta=cfg.a2po_eta,
-        beta=cfg.a2po_beta,
-        reg_lambda=cfg.a2po_reg_lambda,
-        clip_grad_norm=1.0,
-        value_lr=cfg.a2po_value_lr,
-        device=cfg.device,
-    )
-    a2po = A2PO(pi, value_fns=v_local, cfg=a2po_cfg)
-    logs_a2po = a2po.train(lambda: env_builder(400), num_iterations=cfg.iterations)
-    results["A2PO"] = {"logs": logs_a2po, "final": evaluate_last(logs_a2po)}
+
 
     return results
 
