@@ -38,6 +38,27 @@ def resolve_env_name(env_name: str) -> str:
         return env_name
 
 
+def load_mpe_parallel_env(env_name: str):
+    try:
+        from pettingzoo.mpe import simple_adversary_v3, simple_push_v3, simple_reference_v3, simple_spread_v3, simple_tag_v3
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "PettingZoo is required for MPE experiments. Install it with `pip install pettingzoo[mpe]`."
+        ) from exc
+
+    env_builders = {
+        "simple_spread_v3": simple_spread_v3.parallel_env,
+        "simple_reference_v3": simple_reference_v3.parallel_env,
+        "simple_push_v3": simple_push_v3.parallel_env,
+        "simple_adversary_v3": simple_adversary_v3.parallel_env,
+        "simple_tag_v3": simple_tag_v3.parallel_env,
+    }
+    if env_name not in env_builders:
+        supported = ", ".join(sorted(env_builders))
+        raise ValueError(f"Unsupported MPE env '{env_name}'. Supported envs: {supported}")
+    return env_builders[env_name]
+
+
 class MultiAgentSharedCartPole:
     """A simple cooperative multi-agent Gym wrapper.
 
@@ -126,6 +147,60 @@ class MultiAgentSharedCartPole:
             env.close()
 
 
+class MultiAgentSharedMPE:
+    """Shared-reward wrapper over PettingZoo MPE parallel environments."""
+
+    def __init__(
+        self,
+        n_agents: int,
+        env_name: str = "simple_spread_v3",
+        max_steps: int = 50,
+        seed: int | None = None,
+        local_ratio: float = 0.0,
+        continuous_actions: bool = False,
+    ):
+        self.n_agents = n_agents
+        self.env_name = env_name
+        self.max_steps = max_steps
+        self._seed = seed
+        env_builder = load_mpe_parallel_env(env_name)
+        self._env = env_builder(
+            N=n_agents,
+            max_cycles=max_steps,
+            continuous_actions=continuous_actions,
+            local_ratio=local_ratio,
+            render_mode=None,
+        )
+        self.possible_agents = list(self._env.possible_agents)
+        if len(self.possible_agents) != n_agents:
+            raise ValueError(
+                f"MPE env {env_name} created {len(self.possible_agents)} agents, expected {n_agents}."
+            )
+
+        first_action_space = self._env.action_space(self.possible_agents[0])
+        if not isinstance(first_action_space, spaces.Discrete):
+            raise ValueError(
+                f"MPE wrapper currently supports only discrete actions, got {type(first_action_space)} for {env_name}."
+            )
+        self.n_actions = int(first_action_space.n)
+
+    def reset(self):
+        obs, _ = self._env.reset(seed=self._seed)
+        return [np.asarray(obs[agent], dtype=np.float32) for agent in self.possible_agents]
+
+    def step(self, actions: Sequence[int]):
+        action_dict = {agent: int(action) for agent, action in zip(self.possible_agents, actions)}
+        obs, rewards, terminations, truncations, _ = self._env.step(action_dict)
+        team_reward = float(np.mean([float(rewards.get(agent, 0.0)) for agent in self.possible_agents]))
+        team_rewards = [team_reward for _ in self.possible_agents]
+        done = any(bool(terminations.get(agent, False) or truncations.get(agent, False)) for agent in self.possible_agents)
+        next_obs = [np.asarray(obs[agent], dtype=np.float32) for agent in self.possible_agents]
+        return next_obs, team_rewards, done, {}
+
+    def close(self):
+        self._env.close()
+
+
 class PolicyNet(nn.Module):
     def __init__(self, obs_dim: int, hidden: int = 64, n_actions: int = 2):
         super().__init__()
@@ -160,6 +235,7 @@ class ValueNet(nn.Module):
 @dataclass
 class TrainConfig:
     env_name: str = "CartPole-v1"
+    env_family: str = "gym"
     n_agents: int = 3
     iterations: int = 80
     batch_episodes: int = 8
@@ -180,6 +256,7 @@ class TrainConfig:
     a2po_value_lr: float = 3e-4
     device: str = "cpu"
     seed: int = 42
+    mpe_local_ratio: float = 0.0
 
 
 def set_seed(seed: int) -> None:
@@ -501,6 +578,7 @@ def _save_outputs(outdir: Path, results: dict, cfg: TrainConfig):
     # Save summary JSON
     summary = {
         "config": {
+            "env_family": cfg.env_family,
             "env_name": cfg.env_name,
             "n_agents": cfg.n_agents,
             "iterations": cfg.iterations,
@@ -508,6 +586,7 @@ def _save_outputs(outdir: Path, results: dict, cfg: TrainConfig):
             "horizon": cfg.horizon,
             "device": cfg.device,
             "seed": cfg.seed,
+            "mpe_local_ratio": cfg.mpe_local_ratio,
         },
         "results": {
             method: {
@@ -536,7 +615,7 @@ def _save_outputs(outdir: Path, results: dict, cfg: TrainConfig):
         returns = [x["avg_return"] for x in logs]
         plt.plot(iters, returns, linewidth=2, label=method, marker="o", markersize=3, alpha=0.7)
     
-    plt.title(f"Gym {cfg.env_name} Comparison (n_agents={cfg.n_agents})")
+    plt.title(f"{cfg.env_family.upper()} {cfg.env_name} Comparison (n_agents={cfg.n_agents})")
     plt.xlabel("Iteration")
     plt.ylabel("Average Return")
     plt.legend()
@@ -555,19 +634,29 @@ def run_all(cfg: TrainConfig):
     device = torch.device(cfg.device)
 
     def env_builder(seed_shift: int = 0, model: str = "npg"):
+        max_steps = cfg.npg_horizon if model == "npg" else cfg.horizon
+        seed = cfg.seed + seed_shift
+        if cfg.env_family == "mpe":
+            return MultiAgentSharedMPE(
+                cfg.n_agents,
+                env_name=cfg.env_name,
+                max_steps=max_steps,
+                seed=seed,
+                local_ratio=cfg.mpe_local_ratio,
+            )
         if model == "npg":
             # NPG_uniform uses a smaller rollout horizon to keep second-order updates tractable.
             return MultiAgentSharedCartPole(
-            cfg.n_agents,
-            env_name=cfg.env_name,
-            max_steps=cfg.npg_horizon,
-            seed=cfg.seed + seed_shift,
+                cfg.n_agents,
+                env_name=cfg.env_name,
+                max_steps=max_steps,
+                seed=seed,
             )
         return MultiAgentSharedCartPole(
             cfg.n_agents,
             env_name=cfg.env_name,
-            max_steps=cfg.horizon,
-            seed=cfg.seed + seed_shift,
+            max_steps=max_steps,
+            seed=seed,
         )
 
     # Infer dimensions from a fresh env
@@ -631,7 +720,8 @@ def run_all(cfg: TrainConfig):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Compare IPPO/MAPPO/NPG_uniform vs A2PO on Gym env")
+    parser = argparse.ArgumentParser(description="Compare IPPO/MAPPO/NPG_uniform vs A2PO on Gym or MPE envs")
+    parser.add_argument("--env_family", type=str, default="gym", choices=("gym", "mpe"))
     parser.add_argument("--env_name", type=str, default="CartPole-v1")
     parser.add_argument("--n_agents", type=int, default=3)
     parser.add_argument("--iterations", type=int, default=60)
@@ -646,10 +736,12 @@ def main():
     parser.add_argument("--a2po_eta", type=float, default=0.003)
     parser.add_argument("--a2po_beta", type=float, default=0.9)
     parser.add_argument("--a2po_reg_lambda", type=float, default=0.01)
+    parser.add_argument("--mpe_local_ratio", type=float, default=0.0)
     parser.add_argument("--outdir", type=str, default="", help="output dir; auto-generated if empty")
     args = parser.parse_args()
 
     cfg = TrainConfig(
+        env_family=args.env_family,
         env_name=args.env_name,
         n_agents=args.n_agents,
         iterations=args.iterations,
@@ -665,6 +757,7 @@ def main():
         a2po_value_lr=3e-4,
         device=args.device,
         seed=args.seed,
+        mpe_local_ratio=args.mpe_local_ratio,
     )
 
     results = run_all(cfg)
@@ -674,14 +767,14 @@ def main():
         outdir = Path(args.outdir)
     else:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        outdir = Path("results") / "dataset" / f"gym/{cfg.env_name}/n{cfg.n_agents}/it{cfg.iterations}_{ts}"
+        outdir = Path("results") / "dataset" / f"{cfg.env_family}/{cfg.env_name}/n{cfg.n_agents}/it{cfg.iterations}_{ts}"
     
     # Save outputs
     saved_outdir, csv_path, results_csv_path, plot_path, json_path = _save_outputs(outdir, results, cfg)
 
-    print(f"\n=== Gym Comparison (shared-reward MultiAgent {cfg.env_name}) ===")
+    print(f"\n=== {cfg.env_family.upper()} Comparison (shared-reward MultiAgent {cfg.env_name}) ===")
     print(
-        f"env={cfg.env_name}, n_agents={cfg.n_agents}, iterations={cfg.iterations}, "
+        f"env_family={cfg.env_family}, env={cfg.env_name}, n_agents={cfg.n_agents}, iterations={cfg.iterations}, "
         f"batch_episodes={cfg.batch_episodes}, horizon={cfg.horizon}"
     )
     print("-----------------------------------------------------------")
