@@ -7,7 +7,7 @@ set -euo pipefail
 # Optional overrides:
 #   N_AGENTS=5 ITERATIONS=100 DEVICE=cuda SEED=42 bash run_compare_gym_envs.sh
 
-N_AGENTS="${N_AGENTS:-20}"
+N_AGENTS="${N_AGENTS:-10}"
 ITERATIONS="${ITERATIONS:-500}"
 BATCH_SIZE="${BATCH_SIZE:-4}"
 DEVICE="${DEVICE:-cuda}"
@@ -21,8 +21,7 @@ export PYTHONUNBUFFERED=1
 
 ENVS=(
   # "CartPole-v1"
-  # "LunarLander-v3"
-  "Pendulum-v1"
+  # "Pendulum-v1"
   # "HalfCheetah-v4"
   # "Hopper-v4"
   # "Walker2d-v4"

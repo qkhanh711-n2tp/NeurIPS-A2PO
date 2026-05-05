@@ -308,9 +308,10 @@ def main() -> None:
     _write_runtime_csv(runtime_csv_path, runtimes, runtime_method_order)
 
     plt.figure(figsize=(9, 5.5))
+    label_map = {"A2PO": "A2FPO"}
     for name in method_order:
         smooth_curve = _moving_average(curves[name], args.smooth)
-        plt.plot(xs, smooth_curve, linewidth=2, label=name)
+        plt.plot(xs, smooth_curve, linewidth=2, label=label_map.get(name, name))
 
     plt.title(title)
     plt.xlabel("Iteration")

@@ -13,7 +13,7 @@ from utils import ensure_dir, mean_std_ci95, plot_curves, write_csv, write_json
 @dataclass
 class NavigationConfig:
     preset: str = "paper"
-    n_agents: int = 3
+    n_agents: int = 10
     horizon: int = 15
     iterations: int = 500
     batch_size: int = 8
@@ -366,7 +366,7 @@ def run_method(method: str, cfg: NavigationConfig, seed: int, return_weights: bo
                     grad.reshape(-1),
                 ).reshape(weights[agent_idx].shape)
                 weights[agent_idx] += cfg.lr * update
-            elif method == "A2PO_Diag":
+            elif method in {"A2PO_Diag", "A2PO_Full"}:
                 # Handled after loop as a coupled decentralized step
                 continue
             else:
@@ -399,6 +399,37 @@ def run_method(method: str, cfg: NavigationConfig, seed: int, return_weights: bo
             weights_new = np.einsum("ij,j...->i...", mixing, weights_stack) + cfg.lr * tracker_new
 
             fisher_diag = [fisher_new[agent_idx].copy() for agent_idx in range(cfg.n_agents)]
+            prev_pc = [g_tilde[agent_idx].copy() for agent_idx in range(cfg.n_agents)]
+            tracker = [tracker_new[agent_idx].copy() for agent_idx in range(cfg.n_agents)]
+            weights = [weights_new[agent_idx].copy() for agent_idx in range(cfg.n_agents)]
+        elif method == "A2PO_Full":
+            grad_stack = np.stack(
+                [
+                    clip_norm(grads_acc[agent_idx].reshape(-1), cfg.clip_grad).reshape(weights[agent_idx].shape)
+                    / cfg.batch_size
+                    for agent_idx in range(cfg.n_agents)
+                ],
+                axis=0,
+            )
+            fisher_stack = np.stack([fisher_full_acc[agent_idx] / cfg.batch_size for agent_idx in range(cfg.n_agents)], axis=0)
+            g_tilde = np.stack(
+                [
+                    np.linalg.solve(
+                        fisher_stack[agent_idx] + cfg.reg_lambda * np.eye(param_dim, dtype=np.float64),
+                        grad_stack[agent_idx].reshape(-1),
+                    ).reshape(weights[agent_idx].shape)
+                    for agent_idx in range(cfg.n_agents)
+                ],
+                axis=0,
+            )
+
+            tracker_stack = np.stack(tracker, axis=0)
+            prev_pc_stack = np.stack(prev_pc, axis=0)
+            tracker_new = np.einsum("ij,j...->i...", mixing, tracker_stack) + g_tilde - prev_pc_stack
+
+            weights_stack = np.stack(weights, axis=0)
+            weights_new = np.einsum("ij,j...->i...", mixing, weights_stack) + cfg.lr * tracker_new
+
             prev_pc = [g_tilde[agent_idx].copy() for agent_idx in range(cfg.n_agents)]
             tracker = [tracker_new[agent_idx].copy() for agent_idx in range(cfg.n_agents)]
             weights = [weights_new[agent_idx].copy() for agent_idx in range(cfg.n_agents)]
@@ -454,7 +485,7 @@ def main() -> None:
         horizon=args.horizon,
         num_seeds=args.num_seeds,
     )
-    methods = ["IPPO", "MAPPO", "NPG_Uniform", "A2PO_Diag"]
+    methods = ["IPPO", "MAPPO", "NPG_Uniform", "A2PO_Diag", "A2PO_Full"]
     seeds = list(range(cfg.seed_offset, cfg.seed_offset + cfg.num_seeds))
     result = aggregate(cfg, methods, seeds)
     outdir = ensure_dir(Path(args.outdir))
@@ -483,7 +514,8 @@ def main() -> None:
         "IPPO_mean,IPPO_std,"
         "MAPPO_mean,MAPPO_std,"
         "NPG_Uniform_mean,NPG_Uniform_std,"
-        "A2PO_Diag_mean,A2PO_Diag_std"
+        "A2PO_Diag_mean,A2PO_Diag_std,"
+        "A2PO_Full_mean,A2PO_Full_std"
     )
     write_csv(outdir / "curves.csv", curve_header, curve_rows)
     plot_curves(

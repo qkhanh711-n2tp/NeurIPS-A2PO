@@ -17,11 +17,11 @@ def softmax(x: np.ndarray) -> np.ndarray:
 
 @dataclass
 class MatrixGameConfig:
-    n_agents: int = 3
+    n_agents: int = 30
     action_sizes: tuple[int, ...] = (3, 4, 5)
     heterogeneity: float = 2.0
     batch_size: int = 16
-    iterations: int = 200
+    iterations: int = 500
     lr: float = 0.05
     beta: float = 0.9
     reg_lambda: float = 0.01
